@@ -25,7 +25,7 @@ public:
         return "nanomsg";
     }
 
-    std::string message(int errnum) const {
+    std::string message(int errnum) const override {
         return nn_strerror(errnum);
     }
 };
@@ -43,7 +43,7 @@ inline void ThrowError(const std::error_code& ec, const char *location) {
 
 enum AF : int {
     SP = AF_SP,
-    SP_ROW = AF_SP_RAW
+    SP_RAW = AF_SP_RAW
 };
 
 const int DONTWAIT = NN_DONTWAIT;
