@@ -65,7 +65,7 @@ constexpr T& MoveAssign(T *lhs, T&& rhs) {
 
 class Msg {
 public:
-    Msg() noexcept = default;
+    constexpr Msg() noexcept = default;
 
     explicit Msg(size_t size, int type = 0) noexcept
         : data_(nn_allocmsg(size, type))
@@ -92,9 +92,9 @@ public:
     Msg(const Msg& rhs) = delete;
     void operator=(const Msg& rhs) = delete;
 
-    void *data() noexcept { return data_; }
-    void *data() const noexcept { return data_; }
-    size_t size() const noexcept { return size_; }
+    constexpr void *data() noexcept { return data_; }
+    constexpr void *data() const noexcept { return data_; }
+    constexpr size_t size() const noexcept { return size_; }
 
     std::pair<void *, size_t> Detach() noexcept {
         return {
@@ -134,7 +134,7 @@ class Socket {
 public:
     static constexpr int kValidHandle = -1;
 
-    Socket() noexcept = default;
+    constexpr Socket() noexcept = default;
 
     Socket(AF af, int protocol) {
         Create(af, protocol);
@@ -294,9 +294,9 @@ public:
         ThrowError(ec, "Socket.Recv");
     }
 
-    int fd() const noexcept { return h_; }
-    bool Ok() const noexcept { return h_ >= 0; }
-    operator bool() const noexcept { return Ok(); }
+    constexpr int fd() const noexcept { return h_; }
+    constexpr bool Ok() const noexcept { return h_ >= 0; }
+    constexpr operator bool() const noexcept { return Ok(); }
     int Detach() noexcept { return std::exchange(h_, kValidHandle); }
 private:
     Socket(const Socket&) = delete;
