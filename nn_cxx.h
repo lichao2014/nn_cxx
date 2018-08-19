@@ -53,6 +53,66 @@ inline void ThrowError(const std::error_code& ec, const char *location) {
     }
 }
 
+template<typename T, std::enable_if_t<std::is_move_constructible_v<T>, int> = 0>
+constexpr T& MoveAssign(T *lhs, T&& rhs) {
+    if (lhs != std::addressof(rhs)) {
+        lhs->~T();
+        new (lhs) T(std::move(rhs));
+    }
+
+    return *lhs;
+}
+
+class Msg {
+public:
+    Msg() noexcept = default;
+
+    explicit Msg(size_t size, int type = 0) noexcept
+        : data_(nn_allocmsg(size, type))
+        , size_(size) {}
+
+    ~Msg() {
+        if (data_) {
+            nn_freemsg(data_);
+            data_ = nullptr;
+            size_ = 0;
+        }
+    }
+
+    Msg(Msg&& rhs) noexcept
+        : data_(rhs.data_)
+        , size_(rhs.size_) { 
+        rhs.Detach();
+    }
+
+    Msg& operator=(Msg&& rhs) noexcept {
+        return MoveAssign(this, std::move(rhs));
+    }
+
+    Msg(const Msg& rhs) = delete;
+    void operator=(const Msg& rhs) = delete;
+
+    void *data() noexcept { return data_; }
+    void *data() const noexcept { return data_; }
+    size_t size() const noexcept { return size_; }
+
+    std::pair<void *, size_t> Detach() noexcept {
+        return {
+            std::exchange(data_, nullptr),
+            std::exchange(size_, 0)
+        };
+    }
+
+    void reset(void *data, size_t size) noexcept {
+        this->~Msg();
+        data_ = data;
+        size_ = size;
+    }
+protected:
+    void *data_ = nullptr;
+    size_t size_ = 0;
+};
+
 enum class AF : int {
     SP = AF_SP,
     SP_RAW = AF_SP_RAW
@@ -74,21 +134,16 @@ class Socket {
 public:
     static constexpr int kValidHandle = -1;
 
-    Socket() = default;
+    Socket() noexcept = default;
 
     Socket(AF af, int protocol) {
         Create(af, protocol);
     }
 
-    Socket(Socket&& other) : h_(other.Detach()) {}
+    Socket(Socket&& rhs) noexcept : h_(rhs.Detach()) {}
 
-    Socket& operator=(Socket&& other) noexcept {
-        if (this != std::addressof(other)) {
-            Close();
-            h_ = other.Detach();
-        }
-
-        return *this;
+    Socket& operator=(Socket&& rhs) noexcept {
+        return MoveAssign(this, std::move(rhs));
     }
 
     ~Socket() {
@@ -207,6 +262,36 @@ public:
         int ret = Recv(buf, flags, ec);
         ThrowError(ec, "Socket.Recv");
         return ret;
+    }
+
+    int Send(const Msg& msg, int flags, std::error_code &ec) noexcept {
+        int ret = Send(msg.data(), static_cast<int>(msg.size()), flags, ec);
+        if (ret > 0) {
+            const_cast<Msg &>(msg).Detach();
+        }
+        return ret;
+    }
+
+    int Send(const Msg& msg, int flags = 0) {
+        int ret = Send(msg.data(), static_cast<int>(msg.size()), flags);
+        if (ret > 0) {
+            const_cast<Msg &>(msg).Detach();
+        }
+        return ret;
+    }
+
+    void Recv(Msg &msg, int flags, std::error_code &ec) noexcept {
+        void *buf = nullptr;
+        int ret = Recv(&buf, flags, ec);
+        if (ret > 0) {
+            msg.reset(buf, ret);
+        }
+    }
+
+    void Recv(Msg &msg, int flags = 0) {
+        std::error_code ec;
+        Recv(msg, flags, ec);
+        ThrowError(ec, "Socket.Recv");
     }
 
     int fd() const noexcept { return h_; }

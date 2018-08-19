@@ -138,10 +138,10 @@ public:
         req->Connect(addr);
 
         poller_->AddSocket(rep->fd(), [=] {
-            void *buf;
-            int ret = rep->Recv(&buf);
-            if (ret > 0) {
-                rep->Send(buf, ret);
+            Msg msg;
+            rep->Recv(msg);
+            if (msg.size() > 0) {
+                rep->Send(msg);
             }
         }, nullptr);
 
