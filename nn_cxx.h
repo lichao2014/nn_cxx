@@ -5,7 +5,6 @@
 #define _NN_CXX_H_INCLUDED
 
 #include <system_error>
-#include <stdexcept>
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -35,6 +34,20 @@ inline const std::error_category& get_error_category() noexcept {
     return s_error_category;
 }
 
+inline void CheckError(bool ok, std::error_code& ec) noexcept {
+    if (!ok) {
+        ec.assign(nn_errno(), get_error_category());
+    }
+}
+
+inline int CheckError(int ret, std::error_code& ec) noexcept {
+    if (ret < 0) {
+        ec.assign(nn_errno(), get_error_category());
+    }
+
+    return ret;
+}
+
 inline void ThrowError(const std::error_code& ec, const char *location) {
     if (ec) {
         throw std::system_error(ec, location);
@@ -46,7 +59,7 @@ enum AF : int {
     SP_RAW = AF_SP_RAW
 };
 
-const int DONTWAIT = NN_DONTWAIT;
+const int kDONTWAIT = NN_DONTWAIT;
 
 template<int Level, int Opt, typename T>
 struct SocketOpt {
@@ -90,114 +103,111 @@ public:
         }
 
         h_ = nn_socket(static_cast<int>(af), protocol);
-        if (!Ok()) {
-            ec.assign(nn_errno(), get_error_category());
-        }
+        CheckError(Ok(), ec);
     }
 
     void Create(AF af, int protocol) {
         std::error_code ec;
         Create(af, protocol, ec);
-        ThrowError(ec, "Create");
+        ThrowError(ec, "Socket.Create");
     }
 
     void Close(std::error_code& ec) noexcept {
-        if (!Ok()) {
-            return;
-        }
-
-        int ret = nn_close(Detach());
-        if ( ret < 0) {
-            ec.assign(ret, get_error_category());
-        }
+        CheckError(!Ok() || (nn_close(Detach()) >= 0), ec);
     }
 
     void Close() {
         std::error_code ec;
         Close(ec);
-        ThrowError(ec, "Close");
+        ThrowError(ec, "Socket.Close");
     }
 
     template<int Level, int Opt, typename T>
     void SetOpt(const SocketOpt<Level, Opt, T>& opt, std::error_code &ec) noexcept {
-        int ret = Ok() ? nn_setsockopt(h_, Level, Opt, &opt.val, sizeof opt.val) : EBADF;
-        if (ret < 0) {
-            ec.assign(ret, get_error_category());
-        }
+        CheckError(nn_setsockopt(h_, Level, Opt, &opt.val, sizeof opt.val), ec);
     }
 
     template<int Level, int Opt, typename T>
     void SetOpt(const SocketOpt<Level, Opt, T>& opt) {
         std::error_code ec;
         SetOpt(opt, ec);
-        ThrowError(ec, "SetOpt");
+        ThrowError(ec, "Socket.SetOpt");
     }
 
     template<int Level, int Opt, typename T>
     void GetOpt(SocketOpt<Level, Opt, T>& opt, std::error_code &ec) noexcept {
         size_t optvallen = sizeof opt.val;
-        int ret = Ok() ? nn_getsockopt(h_, Level, Opt, &opt.val, &optvallen) : EBADF;
-        if (ret < 0) {
-            ec.assign(ret, get_error_category());
-        }
+        CheckError(nn_getsockopt(h_, Level, Opt, &opt.val, &optvallen), ec);
     }
 
     template<int Level, int Opt, typename T>
     void GetOpt(SocketOpt<Level, Opt, T>& opt) {
         std::error_code ec;
         GetOpt(opt, ec);
-        ThrowError(ec, "GetOpt");
+        ThrowError(ec, "Socket.GetOpt");
     }
 
     void Bind(const char *addr, std::error_code& ec) noexcept {
-        int ret = Ok() ? nn_bind(h_, addr) : EBADF;
-        if (ret < 0) {
-            ec.assign(ret, get_error_category());
-        }
+        CheckError(nn_bind(h_, addr), ec);
     }
 
     void Bind(const char *addr) {
         std::error_code ec;
         Bind(addr, ec);
-        ThrowError(ec, "Bind");
+        ThrowError(ec, "Socket.Bind");
     }
 
-    void Connet(const char *addr, std::error_code& ec) noexcept {
-        int ret = Ok() ? nn_connect(h_, addr) : EBADF;
-        if (ret < 0) {
-            ec.assign(ret, get_error_category());
-        }
+    void Connect(const char *addr, std::error_code& ec) noexcept {
+        CheckError(nn_connect(h_, addr), ec);
     }
 
-    void Connet(const char *addr) {
+    void Connect(const char *addr) {
         std::error_code ec;
-        Connet(addr, ec);
-        ThrowError(ec, "Connect");
+        Connect(addr, ec);
+        ThrowError(ec, "Socket.Connect");
     }
 
     void Shutdown(int how, std::error_code& ec) noexcept {
-        int ret = Ok() ? nn_shutdown(h_, how) : EBADF;
-        if (ret < 0) {
-            ec.assign(ret, get_error_category());
-        }
+        CheckError(nn_shutdown(h_, how), ec);
     }
 
     void Shutdown(int how) {
         std::error_code ec;
         Shutdown(how, ec);
-        ThrowError(ec, "Shutdown");
+        ThrowError(ec, "Socket.Shutdown");
     }
 
-    int Send(const void *buf, size_t len, int flags = 0) noexcept {
-        return Ok() ? nn_send(h_, buf, len, flags) : EBADF;
+    int Send(const void *buf, size_t len, int flags, std::error_code &ec) noexcept {
+        return CheckError(nn_send(h_, buf, len, flags), ec);
     }
 
-    int Recv(void *buf, size_t len, int flags = 0) noexcept {
-        return Ok() ? nn_recv(h_, buf, len, flags) : EBADF;
+    int Send(const void *buf, size_t len, int flags = 0) {
+        std::error_code ec;
+        int ret = Send(buf, len, flags, ec);
+        ThrowError(ec, "Socket.Send");
+        return ret;
     }
 
-    int Recv(void **buf, int flags = 0) noexcept {
-        return Recv(buf, NN_MSG, flags);
+    int Recv(void *buf, size_t len, int flags, std::error_code &ec) noexcept {
+        return CheckError(nn_recv(h_, buf, len, flags), ec);
+    }
+
+    int Recv(void **buf, int flags, std::error_code &ec) noexcept {
+        return CheckError(nn_recv(h_, buf, NN_MSG, flags), ec);
+    }
+
+    int Recv(void *buf, size_t len, int flags = 0) {
+        std::error_code ec;
+        int ret = Recv(buf, len, flags, ec);
+        ThrowError(ec, "Socket.Recv");
+        return ret;
+    }
+
+    int Recv(void **buf, int flags = 0) {
+        std::error_code ec;
+        int ret = Recv(buf, flags, ec);
+        ThrowError(ec, "Socket.Recv");
+        return ret;
     }
 
     int native_handle() const noexcept { return h_; }
@@ -241,18 +251,18 @@ public:
         return {
             socket.release(),
             [sp = shared_from_this()](Socket *p) {
-                sp->DelOp(p->native_handle());
+                sp->DelOp(p->Detach());
                 delete p;
             }
         };
     }
 
-    int Poll(int timeout) {
+    int Poll(int timeout, std::error_code& ec) noexcept {
         CheckOp();
 
         int ret = nn_poll(fds_.data(), static_cast<int>(fds_.size()), timeout);
         if (ret <= 0) {
-            return ret;
+            return CheckError(ret, ec);
         }
 
         for (auto&& fd : fds_) {
@@ -276,6 +286,13 @@ public:
             fd.revents = 0;
         }
 
+        return ret;
+    }
+
+    int Poll(int timeout) {
+        std::error_code ec;
+        int ret = Poll(timeout, ec);
+        ThrowError(ec, "Poller.Poll");
         return ret;
     }
 private:
@@ -330,6 +347,8 @@ private:
         }
 
         cbs_.erase(fd);
+
+        nn_close(fd);
     }
 
     std::vector<struct nn_pollfd> fds_;
