@@ -16,7 +16,7 @@ public:
         socket_.reset();
     }
 
-    void TestSendRecv(const char *addr, const std::string& from) {
+    void TestPipeLine(const char *addr, const std::string& from) {
         auto a = std::make_unique<Socket>(AF::SP, NN_PUSH);
         auto b = std::make_unique<Socket>(AF::SP, NN_PULL);
 
@@ -78,23 +78,23 @@ TEST_F(SocketTest, Connect) {
 }
 
 TEST_F(SocketTest, INPROCSendRecv) {
-    TestSendRecv("inproc://a", "123");
-    TestSendRecv("inproc://b", "123123123");
+    TestPipeLine("inproc://a", "123");
+    TestPipeLine("inproc://b", "123123123");
 }
 
 TEST_F(SocketTest, IPCSendRecv) {
-    TestSendRecv("ipc://a", "123");
-    TestSendRecv("ipc://b", "123123123");
+    TestPipeLine("ipc://a", "123");
+    TestPipeLine("ipc://b", "123123123");
 }
 
 TEST_F(SocketTest, TCPSendRecv) {
-    TestSendRecv("tcp://127.0.0.1:90", "123");
-    TestSendRecv("tcp://127.0.0.1:91", "abcdef");
+    TestPipeLine("tcp://127.0.0.1:90", "123");
+    TestPipeLine("tcp://127.0.0.1:91", "abcdef");
 }
 
 TEST_F(SocketTest, WSSendRecv) {
-    TestSendRecv("ws://127.0.0.1:90", "123");
-    TestSendRecv("ws://127.0.0.1:91", "123123123");
+    TestPipeLine("ws://127.0.0.1:90", "123");
+    TestPipeLine("ws://127.0.0.1:91", "123123123");
 }
 
 class ThreadPoller : public Poller {
@@ -129,22 +129,21 @@ public:
     }
 
     void TestReqRep(const char *addr, int count) {
-        std::shared_ptr<Socket> req;
-        std::shared_ptr<Socket> rep;
-
-        rep = poller_->AddSocket(AF::SP, NN_REP, [&rep] {
-            void *buf;
-            int ret = rep->Recv(&buf);
-            rep->Send(buf, ret);
-        }, {});
+        auto rep = std::make_shared <Socket>(AF::SP, NN_REP);
         ASSERT_TRUE(rep);
-
         rep->Bind(addr);
 
-        req = std::make_shared <Socket>(AF::SP, NN_REQ);
+        auto req = std::make_shared <Socket>(AF::SP, NN_REQ);
         ASSERT_TRUE(req);
-
         req->Connect(addr);
+
+        poller_->AddSocket(rep->fd(), [=] {
+            void *buf;
+            int ret = rep->Recv(&buf);
+            if (ret > 0) {
+                rep->Send(buf, ret);
+            }
+        }, nullptr);
 
         char buf1[64];
         char buf2[64];
@@ -160,17 +159,38 @@ public:
 
             ASSERT_TRUE(std::equal(buf1, buf1 + 64, buf2, buf2 + 64));
         }
+
+        poller_->DelSocket(rep->fd(), [rep]() {
+            rep->Close();
+        });
     }
 
 protected:
     std::shared_ptr<ThreadPoller> poller_;
 };
 
+TEST_F(PollerTest, INPROCReqRep) {
+    TestReqRep("inproc://a", 100);
+    TestReqRep("inproc://bb", 400);
+    TestReqRep("inproc://ccc", 1000);
+}
+
+TEST_F(PollerTest, IPCReqRep) {
+    TestReqRep("ipc://a", 100);
+    TestReqRep("ipc://bb", 400);
+    TestReqRep("ipc://ccc", 1000);
+}
 
 TEST_F(PollerTest, TCPReqRep) {
     TestReqRep("tcp://127.0.0.1:90", 100);
     TestReqRep("tcp://127.0.0.1:92", 400);
     TestReqRep("tcp://127.0.0.1:93", 1000);
+}
+
+TEST_F(PollerTest, WSReqRep) {
+    TestReqRep("ws://127.0.0.1:94", 100);
+    TestReqRep("ws://127.0.0.1:95", 400);
+    TestReqRep("ws://127.0.0.1:96", 1000);
 }
 
 

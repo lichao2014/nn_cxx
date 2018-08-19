@@ -5,12 +5,11 @@
 #define _NN_CXX_H_INCLUDED
 
 #include <system_error>
-#include <memory>
 #include <vector>
 #include <unordered_map>
-#include <functional>
-#include <optional>
 #include <algorithm>
+#include <functional>
+#include <variant>
 #include <atomic>
 #include <mutex>
 
@@ -54,7 +53,7 @@ inline void ThrowError(const std::error_code& ec, const char *location) {
     }
 }
 
-enum AF : int {
+enum class AF : int {
     SP = AF_SP,
     SP_RAW = AF_SP_RAW
 };
@@ -210,7 +209,7 @@ public:
         return ret;
     }
 
-    int native_handle() const noexcept { return h_; }
+    int fd() const noexcept { return h_; }
     bool Ok() const noexcept { return h_ >= 0; }
     operator bool() const noexcept { return Ok(); }
     int Detach() noexcept { return std::exchange(h_, kValidHandle); }
@@ -239,22 +238,14 @@ private:
     std::atomic_flag flag_ = ATOMIC_FLAG_INIT;
 };
 
-class Poller : public std::enable_shared_from_this<Poller> {
+class Poller {
 public:
-    using Callback = std::function<void()>;
+    void AddSocket(int fd, std::function<void()> on_read, std::function<void()> on_write) {
+        AddOp(fd, on_read, on_write);
+    }
 
-    [[nodiscard]]
-    std::shared_ptr<Socket> AddSocket(AF af, int protocol, Callback on_read, Callback on_write) {
-        auto socket = std::make_unique<Socket>(af, protocol);
-        AddOp(socket->native_handle(), on_read, on_write);
-
-        return {
-            socket.release(),
-            [sp = shared_from_this()](Socket *p) {
-                sp->DelOp(p->Detach());
-                delete p;
-            }
-        };
+    void DelSocket(int fd, std::function<void()> on_close) {
+        DelOp(fd, on_close);
     }
 
     int Poll(int timeout, std::error_code& ec) noexcept {
@@ -296,29 +287,35 @@ public:
         return ret;
     }
 private:
-    void AddOp(int fd, Callback on_read, Callback on_write) {
+    using Callback = std::pair<std::function<void()>, std::function<void()>>;
+    using Op = std::variant<Callback, std::function<void()>>;
+
+    void AddOp(int fd, std::function<void()> on_read, std::function<void()> on_write) {
         std::scoped_lock<SpinMutex> guard(mu_);
-        ops_[fd].emplace(on_read, on_write);
+        ops_[fd].emplace<0>(on_read, on_write);
     }
 
-    void DelOp(int fd) {
+    void DelOp(int fd, std::function<void()> on_close) {
         std::scoped_lock<SpinMutex> guard(mu_);
-        ops_[fd].reset();
+        ops_[fd].emplace<1>(on_close);
     }
 
     void CheckOp() {
         std::scoped_lock<SpinMutex> guard(mu_);
         for (auto&& op : ops_) {
-            if (op.second.has_value()) {
-                AddFd(op.first, op.second->first, op.second->second);
-            } else {
-                DelFd(op.first);
-            }
+            std::visit([this, fd = op.first](auto && arg) {
+                using T = std::decay_t<decltype(arg)>;
+                if constexpr (std::is_same_v<T, Callback>) {
+                    AddFd(fd, arg);
+                } else if constexpr (std::is_same_v<T, std::function<void()>>) {
+                    DelFd(fd, arg);
+                }
+            }, op.second);
         }
         ops_.clear();
     }
 
-    void AddFd(int fd, Callback on_read, Callback on_write) {
+    void AddFd(int fd, const Callback& cb) {
         auto it = std::find_if(fds_.begin(), fds_.end(), [&](const struct nn_pollfd& item) { return fd == item.fd; });
         if (it == fds_.end()) {
             fds_.emplace_back();
@@ -329,18 +326,18 @@ private:
         it->events = 0;
         it->revents = 0;
 
-        if (on_read) {
+        if (cb.first) {
             it->events |= NN_POLLIN;
         }
 
-        if (on_write) {
+        if (cb.second) {
             it->events |= NN_POLLOUT;
         }
 
-        cbs_.insert_or_assign(fd, std::make_pair(on_read, on_write));
+        cbs_.insert_or_assign(fd, cb);
     }
 
-    void DelFd(int fd) {
+    void DelFd(int fd, std::function<void()> on_close) {
         auto it = std::find_if(fds_.begin(), fds_.end(), [&](const struct nn_pollfd& item) { return fd == item.fd; });
         if (it != fds_.end()) {
             fds_.erase(it);
@@ -348,12 +345,12 @@ private:
 
         cbs_.erase(fd);
 
-        nn_close(fd);
+        on_close();
     }
 
     std::vector<struct nn_pollfd> fds_;
-    std::unordered_map<int, std::pair<Callback, Callback>> cbs_;
-    std::unordered_map<int, std::optional<std::pair<Callback, Callback>>> ops_;
+    std::unordered_map<int, Callback> cbs_;
+    std::unordered_map<int, Op> ops_;
     SpinMutex mu_;
 };
 
